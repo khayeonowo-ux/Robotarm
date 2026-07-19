@@ -1,0 +1,409 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>AI 햅틱 그랩 시뮬레이터 - 손으로 물체 잡기</title>
+<style>
+  :root{
+    --bg:#16161d; --panel:#1e2118; --accent:#c4c42e; --accent2:#ff6b35;
+    --text:#e6e9f0; --text-dim:#8c94a5; --ok:#78dc82; --warn:#5a5aeb; --line:#3c424e;
+  }
+  *{ box-sizing:border-box; }
+  body{
+    margin:0; background:var(--bg); color:var(--text);
+    font-family:"Malgun Gothic","Apple SD Gothic Neo",sans-serif;
+  }
+  header{ padding:16px 20px; border-bottom:1px solid var(--line); }
+  header h1{ margin:0; font-size:18px; color:var(--accent); letter-spacing:0.5px; }
+  header p{ margin:4px 0 0; font-size:12px; color:var(--text-dim); }
+
+  .layout{ display:flex; flex-wrap:wrap; gap:16px; padding:16px; }
+  .cam-box{
+    position:relative; flex:1 1 640px; max-width:820px;
+    background:#000; border-radius:10px; overflow:hidden;
+    aspect-ratio: 4 / 3;
+  }
+  .cam-box video, .cam-box canvas{
+    position:absolute; top:0; left:0; width:100%; height:100%;
+    transform:scaleX(-1); /* 거울모드 */
+  }
+
+  .panel{
+    flex:1 1 340px; max-width:420px; background:var(--panel);
+    border-radius:10px; padding:20px; display:flex; flex-direction:column; gap:8px;
+  }
+  .panel h2{ margin:0 0 6px; font-size:16px; color:var(--accent); }
+  .row{ display:flex; justify-content:space-between; align-items:center; font-size:14px; padding:5px 0; }
+  .row .label{ color:var(--text-dim); }
+  .row .value{ font-weight:bold; color:var(--accent); text-align:right; }
+  .value.dim{ color:var(--accent2); }
+  hr{ border:none; border-top:1px solid var(--line); margin:6px 0; }
+  .sub-title{ font-size:12px; color:var(--text-dim); margin:4px 0 -2px; }
+
+  .bar-outer{ width:100%; height:16px; border:1px solid var(--line); border-radius:8px; overflow:hidden; margin-top:4px; }
+  .bar-inner{ height:100%; width:0%; background:var(--accent); transition:width 0.08s linear; }
+
+  .material-badge{
+    display:inline-flex; align-items:center; gap:6px; padding:6px 12px;
+    border-radius:20px; background:#12141a; border:1px solid var(--line);
+    font-size:14px; font-weight:bold;
+  }
+
+  .status-bar{
+    margin:0 16px 16px; padding:10px 16px; border-radius:8px;
+    background:#121218; font-size:13px; color:var(--text-dim);
+    display:flex; justify-content:space-between; flex-wrap:wrap; gap:8px;
+  }
+  .status-bar.detected{ color:var(--ok); }
+  .hint{ font-size:11px; color:var(--text-dim); }
+  .instruction{
+    margin:0 16px; padding:10px 16px; border-radius:8px;
+    background:#22261a; border:1px solid var(--accent); font-size:13px; color:var(--accent);
+  }
+
+  @media (max-width: 720px){
+    .layout{ flex-direction:column; padding:10px; gap:10px; }
+    .cam-box{ max-width:100%; }
+    .panel{ max-width:100%; }
+  }
+</style>
+</head>
+<body>
+
+<header>
+  <h1>AI 햅틱 그랩 시뮬레이터</h1>
+  <p>엄지와 검지로 화면 속 가상 물체를 집어보세요. 재질마다 손끝에 전해지는 압력·진동·온도가 서로 다른 수학 함수로 계산됩니다.</p>
+</header>
+
+<div class="instruction">👉 엄지와 검지를 물체 위에서 오므리면 잡히고, 벌리면 놓입니다. 너무 세게 오므리면... 🎈은 터질 수도 있어요!</div>
+
+<div class="layout">
+  <div class="cam-box">
+    <video id="input_video" autoplay playsinline muted></video>
+    <canvas id="output_canvas"></canvas>
+  </div>
+
+  <div class="panel">
+    <h2>GRAB ANALYSIS</h2>
+
+    <div class="row">
+      <span class="label">Hand Detected</span>
+      <span id="handDetected" class="value">No</span>
+    </div>
+    <div class="row">
+      <span class="label">잡은 물체</span>
+      <span id="heldMaterial" class="material-badge">없음</span>
+    </div>
+
+    <hr />
+    <div class="sub-title">재질 반응 함수 (수학)</div>
+    <div class="row"><span class="label">함수 종류</span><span id="curveLabel" class="value">-</span></div>
+    <div class="row"><span class="label">스퀴즈 강도(정규화)</span><span id="squeezeNorm" class="value">-</span></div>
+    <div class="row"><span class="label">함수 출력값</span><span id="curveOutput" class="value">-</span></div>
+
+    <hr />
+    <div class="sub-title">예상 햅틱 출력</div>
+    <div class="row"><span class="label">예상 압력</span><span id="pressure" class="value dim">-</span></div>
+    <div class="row"><span class="label">예상 진동</span><span id="vibration" class="value dim">-</span></div>
+    <div class="row"><span class="label">예상 온도</span><span id="temperature" class="value dim">-</span></div>
+
+    <div class="bar-outer"><div id="intensityBar" class="bar-inner"></div></div>
+
+    <label style="margin-top:10px; font-size:12px; color:var(--text-dim); display:flex; align-items:center; gap:6px;">
+      <input type="checkbox" id="toggleLabels" checked /> 손 랜드마크 표시
+    </label>
+  </div>
+</div>
+
+<div id="statusBar" class="status-bar">
+  <span id="statusText">Camera Connecting...</span>
+  <span class="hint">Chrome 권장 · 웹캠 권한을 허용해주세요</span>
+</div>
+
+<!-- MediaPipe Hands (CDN) -->
+<script src="https://cdn.jsdelivr.net/npm/@mediapipe/camera_utils/camera_utils.js" crossorigin="anonymous"></script>
+<script src="https://cdn.jsdelivr.net/npm/@mediapipe/drawing_utils/drawing_utils.js" crossorigin="anonymous"></script>
+<script src="https://cdn.jsdelivr.net/npm/@mediapipe/hands/hands.js" crossorigin="anonymous"></script>
+
+<script>
+// ------------------------------------------------------------------
+// 설정값
+// ------------------------------------------------------------------
+const DIST_NEAR_CM = 1.0;
+const DIST_FAR_CM  = 12.0;
+const PX_TO_CM_SCALE = 28.0;
+
+const GRAB_THRESHOLD = 0.35;    // 이 이상 오므려야 물체를 잡을 수 있음
+const RELEASE_THRESHOLD = 0.15; // 이 이하로 벌리면 놓침
+const GRAB_RANGE_PX = 60;       // 물체 중심과 손끝 사이 허용 거리(px, 기준 해상도)
+
+// 재질별 설정: 각기 다른 "수학 함수"로 손끝에 전해지는 반응을 계산
+const MATERIALS = [
+  {
+    id: "stone", name: "돌", emoji: "🪨", homeXr: 0.18, homeYr: 0.82, radius: 55,
+    curveLabel: "계단함수 (Step)",
+    curve: (n) => (n > 0.12 ? 1.0 : n / 0.12),
+    pressureRange: [70, 100], vibRange: [15, 40], tempRange: [12, 16],
+    popAt: null,
+  },
+  {
+    id: "sponge", name: "스펀지", emoji: "🧽", homeXr: 0.5, homeYr: 0.82, radius: 55,
+    curveLabel: "시그모이드 (Sigmoid)",
+    curve: (n) => 1 / (1 + Math.exp(-10 * (n - 0.5))),
+    pressureRange: [10, 65], vibRange: [60, 120], tempRange: [24, 28],
+    popAt: null,
+  },
+  {
+    id: "balloon", name: "풍선", emoji: "🎈", homeXr: 0.82, homeYr: 0.82, radius: 55,
+    curveLabel: "거듭제곱함수 (Power)",
+    curve: (n) => Math.pow(n, 0.4),
+    pressureRange: [10, 50], vibRange: [100, 220], tempRange: [30, 34],
+    popAt: 0.88,
+  },
+];
+
+const videoEl = document.getElementById("input_video");
+const canvasEl = document.getElementById("output_canvas");
+const ctx = canvasEl.getContext("2d");
+
+const els = {
+  handDetected: document.getElementById("handDetected"),
+  heldMaterial: document.getElementById("heldMaterial"),
+  curveLabel: document.getElementById("curveLabel"),
+  squeezeNorm: document.getElementById("squeezeNorm"),
+  curveOutput: document.getElementById("curveOutput"),
+  pressure: document.getElementById("pressure"),
+  vibration: document.getElementById("vibration"),
+  temperature: document.getElementById("temperature"),
+  intensityBar: document.getElementById("intensityBar"),
+  statusBar: document.getElementById("statusBar"),
+  statusText: document.getElementById("statusText"),
+  toggleLabels: document.getElementById("toggleLabels"),
+};
+
+function clamp(v, lo, hi){ return Math.max(lo, Math.min(hi, v)); }
+function lerp(a, b, t){ return a + (b - a) * t; }
+
+// 물체별 실시간 상태(자리, 잡힘 여부, 터짐 여부)
+const objState = {};
+MATERIALS.forEach(m => {
+  objState[m.id] = { x: null, y: null, held: false, poppedUntil: 0, popX: 0, popY: 0 };
+});
+let heldId = null;
+
+function landmarkDistanceCm(a, b, frameW, frameH){
+  const dx = (a.x - b.x) * frameW;
+  const dy = (a.y - b.y) * frameH;
+  const dz = (a.z - b.z) * frameW;
+  const px = Math.sqrt(dx*dx + dy*dy + dz*dz);
+  return px / PX_TO_CM_SCALE;
+}
+
+function resizeCanvas(){
+  canvasEl.width = videoEl.videoWidth || canvasEl.clientWidth;
+  canvasEl.height = videoEl.videoHeight || canvasEl.clientHeight;
+}
+
+function drawObject(mat, x, y, highlight){
+  const now = performance.now();
+  const st = objState[mat.id];
+
+  // 터짐 애니메이션 표시 중이면 물체 대신 이펙트만 그리고 리턴
+  if (now < st.poppedUntil){
+    const t = 1 - (st.poppedUntil - now) / 900;
+    ctx.save();
+    ctx.globalAlpha = clamp(1 - t, 0, 1);
+    ctx.beginPath();
+    ctx.arc(st.popX, st.popY, mat.radius * (1 + t * 1.8), 0, Math.PI * 2);
+    ctx.strokeStyle = "#ff6b35";
+    ctx.lineWidth = 4;
+    ctx.stroke();
+    ctx.font = "28px sans-serif";
+    ctx.fillText("💥", st.popX - 16, st.popY + 10);
+    ctx.restore();
+    return;
+  }
+
+  ctx.save();
+  ctx.beginPath();
+  ctx.arc(x, y, mat.radius, 0, Math.PI * 2);
+  ctx.fillStyle = "rgba(255,255,255,0.06)";
+  ctx.fill();
+  ctx.lineWidth = highlight ? 4 : 2;
+  ctx.strokeStyle = highlight ? "#c4c42e" : "rgba(255,255,255,0.35)";
+  ctx.stroke();
+
+  ctx.font = `${mat.radius}px sans-serif`;
+  ctx.textAlign = "center";
+  ctx.textBaseline = "middle";
+  ctx.fillText(mat.emoji, x, y);
+
+  ctx.font = "16px sans-serif";
+  ctx.fillStyle = "#e6e9f0";
+  ctx.fillText(mat.name, x, y + mat.radius + 18);
+  ctx.restore();
+}
+
+function updateHudNoHold(){
+  els.heldMaterial.textContent = "없음";
+  els.curveLabel.textContent = "-";
+  els.squeezeNorm.textContent = "-";
+  els.curveOutput.textContent = "-";
+  els.pressure.textContent = "-";
+  els.vibration.textContent = "-";
+  els.temperature.textContent = "-";
+  els.intensityBar.style.width = "0%";
+}
+
+function onResults(results){
+  resizeCanvas();
+  ctx.save();
+  ctx.clearRect(0, 0, canvasEl.width, canvasEl.height);
+
+  const w = canvasEl.width, h = canvasEl.height;
+
+  // 물체 홈 위치 계산 (해상도 대응)
+  MATERIALS.forEach(m => {
+    const st = objState[m.id];
+    if (st.x === null){ st.x = m.homeXr * w; st.y = m.homeYr * h; }
+  });
+
+  const hasHand = results.multiHandLandmarks && results.multiHandLandmarks.length > 0;
+  els.handDetected.textContent = hasHand ? "Yes" : "No";
+  els.handDetected.style.color = hasHand ? "var(--ok)" : "var(--warn)";
+
+  let gripX = null, gripY = null, squeezeNorm = 0;
+
+  if (hasHand){
+    const lm = results.multiHandLandmarks[0];
+    drawConnectors(ctx, lm, Hands.HAND_CONNECTIONS, {color:"#3c424e", lineWidth:2});
+    if (els.toggleLabels.checked){
+      drawLandmarks(ctx, lm, {color:"#8c94a5", radius:2});
+    }
+
+    const thumb = lm[4], index = lm[8];
+    gripX = ((thumb.x + index.x) / 2) * w;
+    gripY = ((thumb.y + index.y) / 2) * h;
+
+    const distCm = landmarkDistanceCm(thumb, index, w, h);
+    squeezeNorm = clamp((DIST_FAR_CM - distCm) / (DIST_FAR_CM - DIST_NEAR_CM), 0, 1);
+
+    // 손끝(그립 포인트) 표시
+    ctx.beginPath();
+    ctx.arc(gripX, gripY, 8, 0, Math.PI * 2);
+    ctx.fillStyle = "#ff6b35";
+    ctx.fill();
+  }
+
+  const now = performance.now();
+
+  // ---- 잡기 / 놓기 / 이동 로직 ----
+  if (hasHand){
+    if (heldId === null){
+      // 잡기 시도: 손끝과 가까운 물체 중 오므린 정도가 충분하면 grab
+      if (squeezeNorm >= GRAB_THRESHOLD){
+        for (const m of MATERIALS){
+          const st = objState[m.id];
+          if (now < st.poppedUntil) continue; // 터진 직후엔 못 잡음
+          const d = Math.hypot(gripX - st.x, gripY - st.y);
+          if (d < m.radius + GRAB_RANGE_PX){
+            heldId = m.id;
+            st.held = true;
+            break;
+          }
+        }
+      }
+    } else {
+      const mat = MATERIALS.find(m => m.id === heldId);
+      const st = objState[heldId];
+
+      if (mat.popAt !== null && squeezeNorm >= mat.popAt){
+        // 풍선 터짐!
+        st.poppedUntil = now + 900;
+        st.popX = gripX; st.popY = gripY;
+        st.held = false;
+        heldId = null;
+      } else if (squeezeNorm <= RELEASE_THRESHOLD){
+        // 놓기 -> 원위치로 서서히 복귀
+        st.held = false;
+        heldId = null;
+      } else {
+        // 손을 따라 이동
+        st.x = lerp(st.x, gripX, 0.5);
+        st.y = lerp(st.y, gripY, 0.5);
+      }
+    }
+  }
+
+  // 잡히지 않은 물체는 홈 위치로 서서히 복귀
+  MATERIALS.forEach(m => {
+    const st = objState[m.id];
+    if (!st.held && now >= st.poppedUntil){
+      const hx = m.homeXr * w, hy = m.homeYr * h;
+      st.x = lerp(st.x, hx, 0.12);
+      st.y = lerp(st.y, hy, 0.12);
+    }
+  });
+
+  // ---- 물체 그리기 ----
+  MATERIALS.forEach(m => {
+    const st = objState[m.id];
+    drawObject(m, st.x, st.y, heldId === m.id);
+  });
+
+  // ---- HUD 업데이트 ----
+  if (heldId){
+    const mat = MATERIALS.find(m => m.id === heldId);
+    const out = clamp(mat.curve(squeezeNorm), 0, 1);
+    const pressure = lerp(mat.pressureRange[0], mat.pressureRange[1], out);
+    const vibration = lerp(mat.vibRange[0], mat.vibRange[1], out);
+    const temperature = lerp(mat.tempRange[0], mat.tempRange[1], out);
+
+    els.heldMaterial.textContent = `${mat.emoji} ${mat.name}`;
+    els.curveLabel.textContent = mat.curveLabel;
+    els.squeezeNorm.textContent = squeezeNorm.toFixed(2);
+    els.curveOutput.textContent = out.toFixed(2);
+    els.pressure.textContent = pressure.toFixed(0) + " %";
+    els.vibration.textContent = vibration.toFixed(0) + " Hz";
+    els.temperature.textContent = temperature.toFixed(1) + " C";
+    els.intensityBar.style.width = (out * 100).toFixed(0) + "%";
+  } else {
+    updateHudNoHold();
+  }
+
+  if (hasHand){
+    els.statusBar.classList.add("detected");
+    els.statusText.textContent = heldId
+      ? "Camera Connected | MediaPipe Running | Hand Detected | Grabbing..."
+      : "Camera Connected | MediaPipe Running | Hand Detected | AI Calculating...";
+  } else {
+    els.statusBar.classList.remove("detected");
+    els.statusText.textContent = "Camera Connected | MediaPipe Running | No Hand Detected";
+  }
+
+  ctx.restore();
+}
+
+const hands = new Hands({
+  locateFile: (file) => `https://cdn.jsdelivr.net/npm/@mediapipe/hands/${file}`,
+});
+hands.setOptions({
+  maxNumHands: 1,
+  modelComplexity: 1,
+  minDetectionConfidence: 0.6,
+  minTrackingConfidence: 0.6,
+});
+hands.onResults(onResults);
+
+const camera = new Camera(videoEl, {
+  onFrame: async () => { await hands.send({image: videoEl}); },
+  width: 800,
+  height: 600,
+});
+camera.start()
+  .then(() => { els.statusText.textContent = "Camera Connected | MediaPipe Running | No Hand Detected"; })
+  .catch((err) => { els.statusText.textContent = "카메라 접근 실패: " + err.message; });
+</script>
+</body>
+</html>
